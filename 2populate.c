@@ -1,12 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "libpq-fe.h"
-/*
+/* gcc ./2populate.c -lpq -I /opt/postgres/include/ -L /opt/postgres/lib/
+ *
  * create table triplets (time bigint, id bigint, value float);
  * insert into triplets values (1,1,1) (3,2,5) (4,5,5);
  * insert into triplets values (1,1,1);
  */
 
+#define STEPSIZE	100
+#define STEPS		10000
+#define DEVS		10000
 
    struct cell{
 	long time;
@@ -21,16 +25,22 @@
     struct popul{
 	int *mapping;
 	int vars;
-    };	
-    int populate_constructor(popul *this, int size){
+    };
+	
+    int populate_constructor(struct popul *this, int size){
+	this->vars = size;
 	this->mapping = calloc(size, sizeof(int));
+	srand(time(NULL));
     }
 
-    int populate_destructor(pupul *this){
-	free(mapping);
+    int populate_destructor(struct popul *this){
+	free(this->mapping);
     }
 
-    int pupulate(popul *this, struct cell * to_fill){
+    int populate(struct popul *this, struct cell * to_fill){
+	to_fill->id = (long)((rand()%(this->vars)));
+	to_fill->time = this->mapping[to_fill->id]++;
+	to_fill->x.f = ((float)rand()/(float)rand());  
 	return 0;
     }  
 
@@ -45,7 +55,7 @@
 
 
 
-#define TRIPLETS	300
+
 
 static void
 exit_nicely(PGconn *conn)
@@ -64,6 +74,9 @@ main(int argc, char **argv)
     int         nFields;
     int         i,
                 j;
+
+    struct popul class;
+    populate_constructor(&class,DEVS);
 
     if (argc > 1)
         conninfo = argv[1];
@@ -99,7 +112,7 @@ main(int argc, char **argv)
     char *query = malloc(100000);
 
     int size = sprintf(query, "insert into triplets values ");
-    for(i=0;i < TRIPLETS-1; i++){
+    for(i=0;i < STEPSIZE-1; i++){
 	size += sprintf(query + size, "($%d::bigint, $%d::bigint, $%d::float),", 
 			i*(3) + 1, i*(3) + 2,i*(3) + 3);
     }	
@@ -107,7 +120,7 @@ main(int argc, char **argv)
 			i*(3) + 1, i*(3) + 2,i*(3) + 3);
   
     //fprintf(stderr,"%s\n", query);
-    res = PQprepare(conn, "qu", query, TRIPLETS*3, NULL);
+    res = PQprepare(conn, "qu", query, STEPSIZE*3, NULL);
     if (PQresultStatus(res) != PGRES_COMMAND_OK)
     {
         fprintf(stderr, "Prepare query failed: %s", PQerrorMessage(conn));
@@ -117,25 +130,23 @@ main(int argc, char **argv)
     PQclear(res);
     free(query);
 	
-   const char **paramValues = malloc(TRIPLETS*3 * sizeof(const char*));
-   int         *paramLengths = malloc(TRIPLETS*3 * sizeof(int));
-   int         *paramFormats = malloc(TRIPLETS*3 * sizeof(int));	
+   const char **paramValues = malloc(STEPSIZE*3 * sizeof(const char*));
+   int         *paramLengths = malloc(STEPSIZE*3 * sizeof(int));
+   int         *paramFormats = malloc(STEPSIZE*3 * sizeof(int));	
 
 
 
 
 
-	struct   cell * c = malloc(sizeof(struct cell)*TRIPLETS);
-  	struct cell *_c = malloc(sizeof(struct cell)*TRIPLETS);
+	struct   cell * c = malloc(sizeof(struct cell)*STEPSIZE);
+  	struct cell *_c = malloc(sizeof(struct cell)*STEPSIZE);
 
 
-   for(j=0;j < TRIPLETS;j++){	
-	_c[j].time = 0;
-	_c[j].id = 0;
-	_c[j].x.f = 0.1;
+   for(j=0;j < STEPSIZE;j++){	
+	populate(&class, _c + j);
    }
  
-   for(i=0; i < TRIPLETS;i++){
+   for(i=0; i < STEPSIZE;i++){
 
  	paramValues[i*(3)] = (char*)(&(c[i].time));
    	paramLengths[i*(3)] = sizeof(c[i].time);
@@ -150,19 +161,18 @@ main(int argc, char **argv)
 	paramFormats[i*(3) + 2] = 1;
    }
 
-   for(i=0; i < 1000; i++){
-	for(j=0;j < TRIPLETS;j++){	
+   for(i=0; i < STEPS; i++){
+	for(j=0;j < STEPSIZE;j++){	
 
 	   	c[j].time = htobe64(_c[j].time);
    		c[j].id = htobe64(_c[j].id);
  		c[j].x.i = htobe64(_c[j].x.i);
 
-		_c[j].time++;
-   		_c[j].id++;
-   		_c[j].x.f += 0.1;
+		populate(&class, _c + j);
+//		_c[j].time++; 	_c[j].id++; 	_c[j].x.f += 0.1;
 	}
 
-	res = PQexecPrepared(conn, "qu", (TRIPLETS*3), paramValues, paramLengths, paramFormats, 1);
+	res = PQexecPrepared(conn, "qu", (STEPSIZE*3), paramValues, paramLengths, paramFormats, 1);
 	if (PQresultStatus(res) != PGRES_COMMAND_OK){
 		fprintf(stderr, "Exec Prepared query failed: %s", PQerrorMessage(conn));
         	PQclear(res);
@@ -181,7 +191,8 @@ main(int argc, char **argv)
      end the transaction */
     res = PQexec(conn, "END");
     PQclear(res);
-
+	
+    populate_destructor(&class);
     /* close the connection to the database and cleanup */
     PQfinish(conn);
 
